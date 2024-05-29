@@ -3,7 +3,7 @@ use std::{path::PathBuf, ptr::null_mut, rc::Rc};
 use block2::Block;
 use objc2::{
   declare::ClassBuilder,
-  rc::Id,
+  rc::Retained,
   runtime::{AnyObject, NSObject, ProtocolObject, Sel},
 };
 use objc2_foundation::{NSError, NSString, NSURL};
@@ -105,7 +105,7 @@ pub extern "C" fn download_policy(
           let path = NSString::from_str(&path.display().to_string());
           let ns_url = NSURL::fileURLWithPath_isDirectory(&path, false);
           // let nsurl: id = msg_send![class!(NSURL), fileURLWithPath:  isDirectory: false];
-          (*completion_handler).call((Id::as_ptr(&ns_url),))
+          (*completion_handler).call((Retained::as_ptr(&ns_url),))
         }
         false => (*completion_handler).call((null_mut(),)),
       };

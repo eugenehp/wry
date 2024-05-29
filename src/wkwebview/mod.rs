@@ -11,10 +11,10 @@ mod proxy;
 #[cfg(target_os = "macos")]
 mod synthetic_mouse_events;
 
+use block2::Block;
 #[cfg(target_os = "macos")]
-use cocoa::appkit::{NSViewHeightSizable, NSViewMinYMargin, NSViewWidthSizable};
 use cocoa::{
-  base::{id, nil, NO, YES},
+  base::{id, nil, NO},
   foundation::NSInteger,
 };
 
@@ -22,21 +22,24 @@ use dpi::{LogicalPosition, LogicalSize};
 use objc2::{
   class,
   declare::ClassBuilder,
-  declare_class,
-  ffi::{nil, objc_alloc, YES},
-  msg_send_id, mutability,
-  rc::{Allocated, PartialInit},
-  runtime::{AnyClass, AnyObject, Ivar, NSObject, ProtocolObject},
-  ClassType, DeclaredClass,
+  ffi::YES,
+  rc::{Allocated, Retained},
+  runtime::{AnyClass, AnyObject, NSObject, ProtocolObject},
+  ClassType,
 };
-use objc2_app_kit::{NSAutoresizingMaskOptions, NSEvent, NSView};
+use objc2_app_kit::{
+  NSApp, NSApplication, NSAutoresizingMaskOptions, NSEvent, NSModalResponse, NSModalResponseOK,
+  NSTitlebarSeparatorStyle, NSView,
+};
 use objc2_foundation::{
-  ns_string, CGPoint, CGRect, CGSize, MainThreadMarker, NSDictionary, NSHTTPURLResponse,
+  ns_string, CGPoint, CGRect, CGSize, MainThreadMarker, NSArray, NSHTTPURLResponse,
   NSKeyValueObservingOptions, NSMutableDictionary, NSNumber, NSObjectNSKeyValueCoding,
-  NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSString,
+  NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSString, NSURL,
 };
 use objc2_web_kit::{
-  WKAudiovisualMediaTypes, WKDownloadDelegate, WKScriptMessageHandler, WKURLSchemeTask, WKWebView,
+  WKAudiovisualMediaTypes, WKFrameInfo, WKMediaCaptureType, WKNavigationDelegate,
+  WKOpenPanelParameters, WKPermissionDecision, WKScriptMessage, WKScriptMessageHandler,
+  WKSecurityOrigin, WKUIDelegate, WKURLSchemeTask, WKUserContentController, WKWebView,
   WKWebViewConfiguration, WKWebsiteDataStore,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -50,10 +53,7 @@ use std::{
   sync::{Arc, Mutex},
 };
 
-use objc::{
-  declare::ClassDecl,
-  runtime::{Class, Object, Protocol, Sel, BOOL},
-};
+use objc::runtime::{Object, Sel, BOOL};
 use objc_id::Id;
 
 #[cfg(target_os = "macos")]
@@ -95,8 +95,8 @@ const ACCEPT_FIRST_MOUSE: &str = "accept_first_mouse";
 const NS_JSON_WRITING_FRAGMENTS_ALLOWED: u64 = 4;
 
 pub(crate) struct InnerWebView {
-  pub webview: WKWebView,
-  pub manager: id,
+  pub webview: Retained<WKWebView>,
+  pub manager: Retained<WKUserContentController>,
   is_child: bool,
   pending_scripts: Arc<Mutex<Option<Vec<String>>>>,
   // Note that if following functions signatures are changed in the future,
@@ -170,7 +170,12 @@ impl InnerWebView {
     is_child: bool,
   ) -> Result<Self> {
     // Function for ipc handler
-    extern "C" fn did_receive(this: &Object, _: Sel, _: id, msg: id) {
+    extern "C" fn did_receive(
+      this: &AnyObject,
+      _: objc2::runtime::Sel,
+      _: &AnyObject,
+      msg: &WKScriptMessage,
+    ) {
       // Safety: objc runtime calls are unsafe
       unsafe {
         #[cfg(feature = "tracing")]
@@ -179,16 +184,25 @@ impl InnerWebView {
         let function = this.get_ivar::<*mut c_void>("function");
         if !function.is_null() {
           let function = &mut *(*function as *mut Box<dyn Fn(Request<String>)>);
-          let body: id = msg_send![msg, body];
-          let is_string: bool = msg_send![body, isKindOfClass: class!(NSString)];
+          let body = msg.body();
+          // let body: id = msg_send![msg, body];
+          let is_string = Retained::cast::<NSObject>(body.clone()).isKindOfClass(class!(NSString));
+          // let is_string: bool = msg_send![body, isKindOfClass: ];
           if is_string {
-            let js_utf8: *const c_char = msg_send![body, UTF8String];
+            let body = Retained::cast::<objc2_foundation::NSString>(body);
+            // let js_utf8: *const c_char = msg_send![body, UTF8String];
+            let js_utf8 = body.UTF8String();
 
-            let frame_info: id = msg_send![msg, frameInfo];
-            let request: id = msg_send![frame_info, request];
-            let url: id = msg_send![request, URL];
-            let absolute_url: id = msg_send![url, absoluteString];
-            let url_utf8: *const c_char = msg_send![absolute_url, UTF8String];
+            let frame_info = msg.frameInfo();
+            let request = frame_info.request();
+            let url = request.URL().unwrap();
+            let absolute_url = url.absoluteString().unwrap();
+            let url_utf8 = absolute_url.UTF8String();
+            // let frame_info: id = msg_send![msg, frameInfo];
+            // let request: id = msg_send![frame_info, request];
+            // let url: id = msg_send![request, URL];
+            // let absolute_url: id = msg_send![url, absoluteString];
+            // let url_utf8: *const c_char = msg_send![absolute_url, UTF8String];
 
             if let (Ok(url), Ok(js)) = (
               CStr::from_ptr(url_utf8).to_str(),
@@ -209,8 +223,8 @@ impl InnerWebView {
     extern "C" fn start_task(
       this: &AnyObject,
       _: objc2::runtime::Sel,
-      _webview: WKWebView,
-      task: ProtocolObject<dyn WKURLSchemeTask>,
+      _webview: &WKWebView,
+      task: &ProtocolObject<dyn WKURLSchemeTask>,
     ) {
       unsafe {
         #[cfg(feature = "tracing")]
@@ -406,8 +420,8 @@ impl InnerWebView {
     extern "C" fn stop_task(
       _: &AnyObject,
       _: objc2::runtime::Sel,
-      _webview: WKWebView,
-      _task: ProtocolObject<dyn WKURLSchemeTask>,
+      _webview: &WKWebView,
+      _task: &ProtocolObject<dyn WKURLSchemeTask>,
     ) {
     }
 
@@ -713,12 +727,12 @@ impl InnerWebView {
                 observe_value_for_key_path as extern "C" fn(_, _, _, _, _, _),
               );
               extern "C" fn observe_value_for_key_path(
-                this: &Object,
-                _sel: Sel,
-                key_path: id,
-                of_object: id,
-                _change: id,
-                _context: id,
+                this: &AnyObject,
+                _sel: objc2::runtime::Sel,
+                key_path: &objc2_foundation::NSString,
+                of_object: &AnyObject,
+                _change: &AnyObject,
+                _context: &AnyObject,
               ) {
                 let key = NSString(key_path);
                 if key.to_str() == "title" {
@@ -984,102 +998,109 @@ impl InnerWebView {
 
       let page_load_handler = set_navigation_methods(
         navigation_policy_handler,
-        webview,
+        &webview,
         attributes.on_page_load_handler,
       );
 
-      let _: () = msg_send![webview, setNavigationDelegate: navigation_policy_handler];
+      webview.setNavigationDelegate(Some(
+        &*(navigation_policy_handler.cast::<ProtocolObject<dyn WKNavigationDelegate>>()),
+      ));
+      // let _: () = objc2::msg_send![&webview, setNavigationDelegate: navigation_policy_handler];
 
       // File upload panel handler
       extern "C" fn run_file_upload_panel(
-        _this: &Object,
-        _: Sel,
-        _webview: id,
-        open_panel_params: id,
-        _frame: id,
-        handler: id,
+        _this: &ProtocolObject<dyn WKUIDelegate>,
+        _: objc2::runtime::Sel,
+        _webview: &WKWebView,
+        open_panel_params: &WKOpenPanelParameters,
+        _frame: &WKFrameInfo,
+        handler: &Block<(*const NSArray<NSURL>,), ()>,
       ) {
         unsafe {
-          let handler = handler as *mut block::Block<(id,), c_void>;
-          let cls = class!(NSOpenPanel);
-          let open_panel: id = msg_send![cls, openPanel];
-          let _: () = msg_send![open_panel, setCanChooseFiles: YES];
-          let allow_multi: BOOL = msg_send![open_panel_params, allowsMultipleSelection];
-          let _: () = msg_send![open_panel, setAllowsMultipleSelection: allow_multi];
-          let allow_dir: BOOL = msg_send![open_panel_params, allowsDirectories];
-          let _: () = msg_send![open_panel, setCanChooseDirectories: allow_dir];
-          let ok: NSInteger = msg_send![open_panel, runModal];
-          if ok == 1 {
-            let url: id = msg_send![open_panel, URLs];
-            (*handler).call((url,));
-          } else {
-            (*handler).call((nil,));
+          if let Some(mtm) = MainThreadMarker::new() {
+            // let handler = handler as *mut block2::Block<(id,), c_void>;
+            // let cls = objc2::class!(NSOpenPanel);
+            let open_panel = objc2_app_kit::NSOpenPanel::openPanel(mtm);
+            // let open_panel: *mut AnyObject = objc2::msg_send![cls, openPanel];
+            open_panel.setCanChooseFiles(true);
+            // let _: () = msg_send![open_panel, setCanChooseFiles: YES];
+            let allow_multi = open_panel_params.allowsMultipleSelection();
+            // let allow_multi: BOOL = msg_send![open_panel_params, allowsMultipleSelection];
+            open_panel.setAllowsMultipleSelection(allow_multi);
+            // let _: () = msg_send![open_panel, setAllowsMultipleSelection: allow_multi];
+            let allow_dir = open_panel_params.allowsDirectories();
+            // let allow_dir: BOOL = msg_send![open_panel_params, allowsDirectories];
+            open_panel.setCanChooseDirectories(allow_dir);
+            // let _: () = msg_send![open_panel, setCanChooseDirectories: allow_dir];
+            let ok: NSModalResponse = open_panel.runModal();
+            // let ok: NSInteger = msg_send![open_panel, runModal];
+            if ok == NSModalResponseOK {
+              let url = open_panel.URLs();
+              // let url: id = msg_send![open_panel, URLs];
+              (*handler).call((Retained::as_ptr(&url),));
+              // (*handler).call((url,));
+            } else {
+              (*handler).call((null_mut(),));
+            }
           }
         }
       }
 
       extern "C" fn request_media_capture_permission(
         _this: &Object,
-        _: Sel,
-        _webview: id,
-        _origin: id,
-        _frame: id,
-        _type: id,
-        decision_handler: id,
+        _: objc2::runtime::Sel,
+        _webview: &WKWebView,
+        _origin: &WKSecurityOrigin,
+        _frame: &WKFrameInfo,
+        _type: WKMediaCaptureType,
+        decision_handler: &Block<(WKPermissionDecision,), ()>,
       ) {
         unsafe {
-          let decision_handler = decision_handler as *mut block::Block<(NSInteger,), c_void>;
+          // let decision_handler = decision_handler as *mut block::Block<(NSInteger,), c_void>;
           //https://developer.apple.com/documentation/webkit/wkpermissiondecision?language=objc
-          (*decision_handler).call((1,));
+          (*decision_handler).call((WKPermissionDecision::Grant,));
         }
       }
 
-      let ui_delegate = match ClassDecl::new("WebViewUIDelegate", class!(NSObject)) {
+      let ui_delegate = match ClassBuilder::new("WebViewUIDelegate", NSObject::class()) {
         Some(mut ctl) => {
           ctl.add_method(
-            sel!(webView:runOpenPanelWithParameters:initiatedByFrame:completionHandler:),
-            run_file_upload_panel as extern "C" fn(&Object, Sel, id, id, id, id),
+            objc2::sel!(webView:runOpenPanelWithParameters:initiatedByFrame:completionHandler:),
+            run_file_upload_panel as extern "C" fn(_, _, _, _, _, _),
           );
 
           ctl.add_method(
-            sel!(webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:),
-            request_media_capture_permission as extern "C" fn(&Object, Sel, id, id, id, id, id),
+            objc2::sel!(webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:),
+            request_media_capture_permission as extern "C" fn(_, _, _, _, _, _, _),
           );
 
           ctl.register()
         }
         None => class!(WebViewUIDelegate),
       };
-      let ui_delegate: id = msg_send![ui_delegate, new];
-      let _: () = msg_send![webview, setUIDelegate: ui_delegate];
+      let ui_delegate: &ProtocolObject<dyn WKUIDelegate> = objc2::msg_send![ui_delegate, new];
+      webview.setUIDelegate(Some(ui_delegate));
+      // let _: () = msg_send![webview, setUIDelegate: ui_delegate];
 
       // File drop handling
       #[cfg(target_os = "macos")]
       let drag_drop_ptr = match attributes.drag_drop_handler {
         // if we have a drag_drop_handler defined, use the defined handler
-        Some(drag_drop_handler) => {
-          let webview = webview as *mut _ as *mut AnyObject; // FIXME: [objc2]
-          set_drag_drop_handler(webview, drag_drop_handler)
-        }
+        Some(drag_drop_handler) => set_drag_drop_handler(&mut webview, drag_drop_handler),
         // prevent panic by using a blank handler
-        None => {
-          let webview = webview as *mut _ as *mut AnyObject; // FIXME: [objc2]
-          set_drag_drop_handler(webview, Box::new(|_| false))
-        }
+        None => set_drag_drop_handler(&mut webview, Box::new(|_| false)),
       };
 
       // ns window is required for the print operation
       #[cfg(target_os = "macos")]
       {
-        let ns_window: id = msg_send![ns_view, window];
+        let ns_window = ns_view.window().unwrap();
 
-        let can_set_titlebar_style: BOOL = msg_send![
-          ns_window,
-          respondsToSelector: sel!(setTitlebarSeparatorStyle:)
-        ];
+        let can_set_titlebar_style =
+          ns_window.respondsToSelector(objc2::sel!(setTitlebarSeparatorStyle:));
+
         if can_set_titlebar_style == YES {
-          // `1` means `none`, see https://developer.apple.com/documentation/appkit/nstitlebarseparatorstyle/none
-          let () = msg_send![ns_window, setTitlebarSeparatorStyle: 1];
+          ns_window.setTitlebarSeparatorStyle(NSTitlebarSeparatorStyle::None);
         }
       }
 
@@ -1124,20 +1145,23 @@ r#"Object.defineProperty(window, 'ipc', {
       #[cfg(target_os = "macos")]
       {
         if is_child {
-          let _: () = msg_send![ns_view, addSubview: webview];
+          ns_view.addSubview(&webview);
+          // let _: () = msg_send![ns_view, addSubview: webview];
         } else {
-          let parent_view_cls = match ClassDecl::new("WryWebViewParent", class!(NSView)) {
+          let parent_view_cls = match ClassBuilder::new("WryWebViewParent", NSView::class()) {
             Some(mut decl) => {
-              decl.add_method(
-                sel!(keyDown:),
-                key_down as extern "C" fn(&mut Object, Sel, id),
-              );
+              decl.add_method(objc2::sel!(keyDown:), key_down as extern "C" fn(_, _, _));
 
-              extern "C" fn key_down(_this: &mut Object, _sel: Sel, event: id) {
+              extern "C" fn key_down(_this: &NSView, _sel: objc2::runtime::Sel, event: &NSEvent) {
                 unsafe {
-                  let app = cocoa::appkit::NSApp();
-                  let menu: id = msg_send![app, mainMenu];
-                  let () = msg_send![menu, performKeyEquivalent: event];
+                  // let app = cocoa::appkit::NSApp();
+                  // let menu: id = msg_send![app, mainMenu];
+                  // let () = msg_send![menu, performKeyEquivalent: event];
+                  let mtm = MainThreadMarker::new().unwrap();
+                  let app = NSApp(mtm);
+                  if let Some(menu) = app.mainMenu() {
+                    menu.performKeyEquivalent(event);
+                  }
                 }
               }
 
@@ -1146,23 +1170,35 @@ r#"Object.defineProperty(window, 'ipc', {
             None => class!(NSView),
           };
 
-          let parent_view: id = msg_send![parent_view_cls, alloc];
-          let _: () = msg_send![parent_view, init];
-          parent_view.setAutoresizingMask_(NSViewHeightSizable | NSViewWidthSizable);
-          let _: () = msg_send![parent_view, addSubview: webview];
+          let parent_view: Allocated<NSView> = objc2::msg_send_id![parent_view_cls, alloc];
+          let parent_view = NSView::init(parent_view);
+          // let _: () = msg_send![parent_view, init];
+          // parent_view.setAutoresizingMask(NSViewHeightSizable | NSViewWidthSizable);
+          parent_view.setAutoresizingMask(
+            NSAutoresizingMaskOptions::NSViewHeightSizable
+              | NSAutoresizingMaskOptions::NSViewWidthSizable,
+          );
+          parent_view.addSubview(&webview);
+          // let _: () = msg_send![parent_view, addSubview: webview];
 
           // inject the webview into the window
-          let ns_window: id = msg_send![ns_view, window];
+          let ns_window = ns_view.window().unwrap();
+          // let ns_window: id = msg_send![ns_view, window];
           // Tell the webview receive keyboard events in the window.
           // See https://github.com/tauri-apps/wry/issues/739
-          let _: () = msg_send![ns_window, setContentView: parent_view];
-          let _: () = msg_send![ns_window, makeFirstResponder: webview];
+          ns_window.setContentView(Some(&parent_view));
+          ns_window.makeFirstResponder(Some(&webview));
+          // let _: () = msg_send![ns_window, setContentView: parent_view];
+          // let _: () = msg_send![ns_window, makeFirstResponder: webview];
         }
 
         // make sure the window is always on top when we create a new webview
-        let app_class = class!(NSApplication);
-        let app: id = msg_send![app_class, sharedApplication];
-        let _: () = msg_send![app, activateIgnoringOtherApps: YES];
+        // let app_class = class!(NSApplication);
+        // let app: id = msg_send![app_class, sharedApplication];
+        // let _: () = msg_send![app, activateIgnoringOtherApps: YES];
+        let mtm = MainThreadMarker::new().unwrap();
+        let app = NSApplication::sharedApplication(mtm);
+        NSApplication::activate(&app);
       }
 
       #[cfg(target_os = "ios")]

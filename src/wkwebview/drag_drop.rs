@@ -15,6 +15,7 @@ use objc2::{
 };
 use objc2_app_kit::{NSDragOperation, NSDraggingInfo, NSFilenamesPboardType, NSView};
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSString};
+use objc2_web_kit::WKWebView;
 use once_cell::sync::Lazy;
 
 use crate::DragDropEvent;
@@ -67,15 +68,15 @@ static OBJC_DRAGGING_UPDATED: Lazy<
 
 // Safety: objc runtime calls are unsafe
 pub(crate) unsafe fn set_drag_drop_handler(
-  webview: *mut AnyObject,
+  webview: &mut WKWebView,
   handler: Box<dyn Fn(DragDropEvent) -> bool>,
 ) -> *mut Box<dyn Fn(DragDropEvent) -> bool> {
   let listener = Box::into_raw(Box::new(handler));
-  let ivar = (*webview)
+  let ivar = webview
     .class()
     .instance_variable(DRAG_DROP_HANDLER_IVAR)
     .unwrap();
-  let ivar_handler = ivar.load_mut::<*mut c_void>(webview.as_mut().unwrap());
+  let ivar_handler = ivar.load_mut::<*mut c_void>(webview.as_mut());
   *ivar_handler = listener as *mut c_void;
   listener
 }
