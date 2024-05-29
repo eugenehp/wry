@@ -56,6 +56,7 @@ thiserror = "1.0"
 http = "1.1"
 raw-window-handle = { version = "0.6", features = ["std"] }
 dpi = "0.1"
+objc2-app-kit = "0.2.0"
 
 [target."cfg(any(target_os = \"linux\", target_os = \"dragonfly\", target_os = \"freebsd\", target_os = \"openbsd\", target_os = \"netbsd\"))".dependencies]
 javascriptcore-rs = { version = "=1.1", features = ["v2_28"], optional = true }
@@ -99,7 +100,7 @@ core-graphics = "0.23"
 objc = "0.2"
 objc_id = "0.1"
 block2 = "0.4"
-objc2 = "0.5"
+objc2 = { version = "0.5" }
 objc2-web-kit = { version = "0.2.0", features = [
   "objc2-app-kit",
   "block2",
@@ -115,6 +116,11 @@ objc2-web-kit = { version = "0.2.0", features = [
   "WKPreferences",
   "WKURLSchemeTask",
   "WKScriptMessageHandler",
+  "WKUIDelegate",
+  "WKOpenPanelParameters",
+  "WKFrameInfo",
+  "WKSecurityOrigin",
+  "WKScriptMessage",
 ] }
 objc2-foundation = { version = "0.2.0", features = [
   "NSURLRequest",
@@ -126,12 +132,20 @@ objc2-foundation = { version = "0.2.0", features = [
   "NSObject",
   "NSData",
   "NSKeyValueObserving",
+  "NSThread",
 ] }
 objc2-app-kit = { version = "0.2.0", features = [
+  "NSApplication",
   "NSEvent",
   "NSWindow",
   "NSView",
   "NSPasteboard",
+  "NSPanel",
+  "NSResponder",
+  "NSOpenPanel",
+  "NSSavePanel",
+  "NSWindow",
+  "NSMenu",
 ] }
 
 [target."cfg(target_os = \"android\")".dependencies]

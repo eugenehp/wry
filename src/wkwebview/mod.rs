@@ -224,7 +224,7 @@ impl InnerWebView {
       this: &AnyObject,
       _: objc2::runtime::Sel,
       _webview: &WKWebView,
-      task: &ProtocolObject<dyn WKURLSchemeTask>,
+      task: *mut ProtocolObject<dyn WKURLSchemeTask>, // FIXME: not sure if this work.
     ) {
       unsafe {
         #[cfg(feature = "tracing")]
@@ -236,7 +236,7 @@ impl InnerWebView {
             &mut *(*function as *mut Box<dyn Fn(Request<Vec<u8>>, RequestAsyncResponder)>);
 
           // Get url request
-          let request = task.request();
+          let request = (*task).request();
           // let request: id = msg_send![task, request];
           let url = request.URL().unwrap();
           // let url: id = msg_send![request, URL];
@@ -320,10 +320,10 @@ impl InnerWebView {
             .unwrap();
             // let response: id = msg_send![urlresponse, initWithURL:url statusCode:StatusCode::NOT_FOUND HTTPVersion:NSString::new(format!("{:#?}", Version::HTTP_11).as_str()) headerFields:null::<c_void>()];
             // let () = msg_send![task, didReceiveResponse: response];
-            task.didReceiveResponse(&response);
+            (*task).didReceiveResponse(&response);
             // Finish
             // let () = msg_send![task, didFinish];
-            task.didFinish();
+            (*task).didFinish();
           };
 
           // send response
@@ -360,7 +360,7 @@ impl InnerWebView {
 
                   // add headers
                   for (name, value) in sent_response.headers().iter() {
-                    let header_key = name.as_str();
+                    // let header_key = name.as_str();
                     if let Ok(value) = value.to_str() {
                       headers.insert_id(
                         objc2_foundation::NSString::from_str(name.as_str()).as_ref(),
@@ -382,7 +382,7 @@ impl InnerWebView {
                     )
                     .unwrap();
                   // let response: id = msg_send![urlresponse, initWithURL:url statusCode: wanted_status_code HTTPVersion:NSString::new(&wanted_version) headerFields:headers];
-                  task.didReceiveResponse(&response);
+                  (*task).didReceiveResponse(&response);
                   // let () = msg_send![task, didReceiveResponse: response];
 
                   // Send data
@@ -396,10 +396,10 @@ impl InnerWebView {
                     if content.len() == 0 { NO } else { YES },
                   );
                   // let data: id = msg_send![data, initWithBytesNoCopy:bytes length:content.len() freeWhenDone: if content.len() == 0 { NO } else { YES }];
-                  task.didReceiveData(&data);
+                  (*task).didReceiveData(&data);
                   // let () = msg_send![task, didReceiveData: data];
                   // Finish
-                  task.didFinish();
+                  (*task).didFinish();
                   // let () = msg_send![task, didFinish];
                 });
 
@@ -1047,7 +1047,7 @@ impl InnerWebView {
       }
 
       extern "C" fn request_media_capture_permission(
-        _this: &Object,
+        _this: &ProtocolObject<dyn WKUIDelegate>,
         _: objc2::runtime::Sel,
         _webview: &WKWebView,
         _origin: &WKSecurityOrigin,
@@ -1211,7 +1211,7 @@ r#"Object.defineProperty(window, 'ipc', {
   }
 
   pub fn url(&self) -> crate::Result<String> {
-    url_from_webview(self.webview)
+    url_from_webview(&self.webview)
   }
 
   pub fn eval(&self, js: &str, callback: Option<impl Fn(String) + Send + 'static>) -> Result<()> {
